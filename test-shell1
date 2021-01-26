@@ -1,0 +1,91 @@
+#!/bin/bash
+if [ $# -ne 2 ] ; then
+    echo 'arguments missing, please provide URL_HOST and bigblueURL'
+    exit 1
+fi
+sudo -i <<  'EOF'
+ls -ltr
+pwd
+whoami
+apt-get update -y
+apt-get dist-upgrade -y
+echo "<<<<Adding Swap Memory >>>>"
+fallocate -l 1G /swapfile
+dd if=/dev/zero of=/swapfile bs=1024 count=1048576
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+if grep -qF "/swapfile swap swap defaults 0 0" /etc/fstab; then
+   echo " entry exists"
+else 
+	echo "<<<<AAdding swapfile entry to /etc/fstab >>>>"
+	echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+fi
+echo "Install Required Packages "
+apt install apt-transport-https ca-certificates curl software-properties-common -y 
+apt install apt-transport-https ca-certificates curl software-properties-common -y 
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable"
+apt update -y 
+apt install docker-ce -y 
+curl -L https://github.com/docker/compose/releases/download/1.21.2/docker-compose-`uname -s`-`uname -m` -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+if  [ -d scalelite-run  ];then
+        rm -rf scalelite-run 
+        echo "  Directory removed"
+fi
+git clone https://github.com/jfederico/scalelite-run
+pwd
+ls -ltr
+cd scalelite-run
+if  [ -f .env  ];then
+        rm -rf .env 
+        echo "  files removed"
+fi
+cp dotenv .env
+openssl rand -hex 64 |tee  SECRET_KEY_BASE.txt
+openssl rand -hex 24 | tee  LOADBALANCER_SECRET.txt
+SECRET_KEY_BASE=$(cat SECRET_KEY_BASE.txt)
+echo SECRET_KEY_BASE=$SECRET_KEY_BASE >> .env
+LOADBALANCER_SECRET=$(cat LOADBALANCER_SECRET.txt)
+echo LOADBALANCER_SECRET=$LOADBALANCER_SECRET >> .env
+echo URL_HOT=$1  >> .env
+echo NGINX_SSL=true >> .env
+sh init-letsencrypt.sh
+docker-compose up -d
+docker exec -i scalelite-api bundle exec rake db:setup
+docker exec -i scalelite-api bundle exec rake status
+docker exec -i scalelite-api bundle exec rake servers
+docker exec -i scalelite-api bundle exec rake servers:add[$2/bigbluebutton/api/,bbb-secret] |tee SERVERID.txt
+SERVERID=$(cat SERVERID.txt)
+docker exec -i scalelite-api bundle exec rake servers:enable[$SERVERID]
+docker exec -i scalelite-api bundle exec rake poll:all
+EOF
+
+#################### PART 2 ###################
+echo "#################   Enabling Recording Feature #####################"
+echo "Aggregating BigBlueButton recordings using Scalelite local file system"
+echo ""
+
+echo "initialization script init-recordings-scalelite.sh and execute"
+echo ""
+sh init-recordings-scalelite.sh
+echo "------------------------"
+
+echo "Updates to BigBlueButton with script "
+echo ""
+echo "creating the directopry structure"
+echo "COMMAND >> mkdir -p /usr/local/bigbluebutton/core/scripts/post_publish "
+mkdir -p /usr/local/bigbluebutton/core/scripts/post_publish
+echo ""
+
+echo "Executing the script "
+echo ""
+echo "COMMAND>> wget -qO- https://raw.githubusercontent.com/jfederico/scalelite-run/master/init-recordings-bigbluebutton.sh | bash -s -- -s "$URL_HOST"
+wget -qO- https://raw.githubusercontent.com/jfederico/scalelite-run/master/init-recordings-bigbluebutton.sh | bash -s -- -s "$URL_HOST"
+
+echo "Updating .pub key on authorized-keys"
+pubkey_content=$(cat /home/bigbluebutton/.ssh/id_rsa.pub)
+echo "$pubkey_content" >>/home/bigbluebutton/.ssh/authorized_keys
+echo ""
+echo "----------------------- DONE -----------------------------"
